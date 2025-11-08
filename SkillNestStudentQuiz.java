@@ -1,6 +1,5 @@
 // SkillNestStudentQuiz.java
-// Polished quiz UI (no in-quiz feedback). Analytics & review shown after completion.
-// Includes a dependency-free paginated PDF exporter for explanations.
+// Main application — keep this as the public class in SkillNestStudentQuiz.java
 
 import javax.imageio.ImageIO;
 import javax.print.DocFlavor;
@@ -78,6 +77,16 @@ public class SkillNestStudentQuiz extends JFrame {
         try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
 
         loadPersistedQuestionVersions();
+
+        // show login/register dialog before allowing access
+        LoginRegisterDialog lr = new LoginRegisterDialog(this);
+        String user = lr.showAndReturnUser();
+        if (user == null) {
+            // user cancelled login -- exit application
+            System.exit(0);
+        }
+        // optionally prefill name based on username
+        nameField.setText(user);
 
         mainPanel.add(buildStartPanel(), "start");
         mainPanel.add(buildQuizPanel(), "quiz");
@@ -1264,7 +1273,7 @@ public class SkillNestStudentQuiz extends JFrame {
      * Limitations: Uses Type1 Helvetica, basic text placement; designed for plain text exports.
      */
     private void writePagedSimplePdf(File file, List<String> wrappedLines, int linesPerPage) throws IOException {
-        // Prepare pages content (each page has its own content stream)
+        // (Implementation identical to earlier single-file version)
         List<List<String>> pages = new ArrayList<>();
         for (int i = 0; i < wrappedLines.size(); i += linesPerPage) {
             int end = Math.min(wrappedLines.size(), i + linesPerPage);
@@ -1279,67 +1288,56 @@ public class SkillNestStudentQuiz extends JFrame {
         w.write("%PDF-1.4\n");
         w.write("%\u00E2\u00E3\u00CF\u00D3\n"); // binary comment
 
-        // Keep track of object offsets (we'll map them to object numbers)
         List<Integer> xrefOffsets = new ArrayList<>();
-        xrefOffsets.add(0); // placeholder for obj 0
+        xrefOffsets.add(0);
 
-        // Object numbering plan:
-        // 1: Catalog
-        // 2: Pages
-        // page/content pairs: 3,4, 5,6, ... (page objs and content objs interleaved)
-        // Font object appended at a later number (we'll compute index)
         int pageCount = pages.size();
         int firstPageObjNum = 3;
-        int fontObjNum = firstPageObjNum + pageCount * 2; // place font after page & content objects
+        int fontObjNum = firstPageObjNum + pageCount * 2;
 
         // Object 1: Catalog
         xrefOffsets.add(baos.size());
         w.write("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
 
-        // Object 2: Pages with Kids
+        // Object 2: Pages
         xrefOffsets.add(baos.size());
         StringBuilder kidsSb = new StringBuilder();
         for (int i = 0; i < pageCount; i++) {
-            int pageObjNumber = firstPageObjNum + (i * 2); // page objects at 3,5,7...
+            int pageObjNumber = firstPageObjNum + (i * 2);
             kidsSb.append(pageObjNumber).append(" 0 R ");
         }
         w.write("2 0 obj\n<< /Type /Pages /Kids [ " + kidsSb.toString().trim() + " ] /Count " + pageCount + " >>\nendobj\n");
 
-        // Reserve font object offset (we'll write it now and record offset)
+        // Font obj
         xrefOffsets.add(baos.size());
         w.write(fontObjNum + " 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n");
 
-        // Prepare content streams bytes for all pages
         List<byte[]> contentBytesList = new ArrayList<>();
         for (int p = 0; p < pageCount; p++) {
             List<String> lines = pages.get(p);
             StringBuilder content = new StringBuilder();
             content.append("BT\n");
-            content.append("/F1 10 Tf\n"); // font size 10
-            // start near top-left margin: move to (50, 800)
+            content.append("/F1 10 Tf\n");
             content.append("50 800 Td\n");
             for (int li = 0; li < lines.size(); li++) {
                 String ln = escapePdfText(lines.get(li));
                 content.append("(").append(ln).append(") Tj\n");
-                if (li < lines.size() - 1) content.append("0 -12 Td\n"); // move down 12
+                if (li < lines.size() - 1) content.append("0 -12 Td\n");
             }
             content.append("ET\n");
             byte[] cb = content.toString().getBytes(StandardCharsets.UTF_8);
             contentBytesList.add(cb);
         }
 
-        // Now write page objects and their content objects
         for (int p = 0; p < pageCount; p++) {
             int pageObjNum = firstPageObjNum + (p * 2);
             int contentObjNum = pageObjNum + 1;
 
-            // Page object
             xrefOffsets.add(baos.size());
             String pageObj = pageObjNum + " 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
                     + "/Resources << /Font << /F1 " + fontObjNum + " 0 R >> >> /Contents " + contentObjNum + " 0 R >>\nendobj\n";
             w.write(pageObj);
 
-            // Content object
             xrefOffsets.add(baos.size());
             byte[] cb = contentBytesList.get(p);
             w.write(contentObjNum + " 0 obj\n<< /Length " + cb.length + " >>\nstream\n");
@@ -1347,16 +1345,10 @@ public class SkillNestStudentQuiz extends JFrame {
             w.write("\nendstream\nendobj\n");
         }
 
-        // Build xref table
         int xrefStart = baos.size();
+        int totalObjects = fontObjNum;
 
-        // Determine highest object number written
-        int totalObjects = fontObjNum; // we placed font at highest number; page/content are below that
-
-        // Build a map objectNumber -> offset
         Map<Integer, Integer> offsetsMap = new TreeMap<>();
-        // xrefOffsets sequence was added in this order:
-        // index 1 -> obj1 offset, 2 -> obj2 offset, 3 -> fontObj offset, then pairs for page/content in order
         int idx = 1;
         offsetsMap.put(1, xrefOffsets.get(idx++));
         offsetsMap.put(2, xrefOffsets.get(idx++));
@@ -1376,11 +1368,9 @@ public class SkillNestStudentQuiz extends JFrame {
             w.write(String.format("%010d %05d n \n", off, 0));
         }
 
-        // Trailer
         w.write("trailer\n<< /Size " + (totalObjects + 1) + " /Root 1 0 R >>\n");
         w.write("startxref\n" + xrefStart + "\n%%EOF\n");
 
-        // Finally write bytes to file
         try (FileOutputStream fos = new FileOutputStream(file)) {
             baos.writeTo(fos);
         }
@@ -1421,20 +1411,5 @@ public class SkillNestStudentQuiz extends JFrame {
     }
     static class DropShadowBorder extends EmptyBorder {
         DropShadowBorder() { super(8, 8, 8, 8); }
-    }
-
-    // Simple Question class (with explanation)
-    static class Question {
-        String subject;
-        String question;
-        String[] options;
-        int correctIndex;
-        String explanation;
-        Question(String subject, String question, String[] options, int correctIndex) {
-            this(subject, question, options, correctIndex, "");
-        }
-        Question(String subject, String question, String[] options, int correctIndex, String explanation) {
-            this.subject = subject; this.question = question; this.options = Arrays.copyOf(options, 4); this.correctIndex = correctIndex; this.explanation = explanation == null ? "" : explanation;
-        }
     }
 }
